@@ -1,0 +1,54 @@
+/*
+
+    Voucher Series Fix Script
+        Purpose: fix the voucher series number format from YY MM VVVVVV to YYYY MM VVVV
+        
+
+*/
+
+BEGIN
+
+
+    FOR record IN (
+      SELECT *
+      FROM VOUCHER_NO_SERIAL_TAB
+      WHERE COMPANY = 'COL005'  -- Inser here hardcoded company
+   )
+   LOOP
+      -- Delete the old row
+      DELETE FROM VOUCHER_NO_SERIAL_TAB
+      WHERE ROWKEY = record.ROWKEY;
+
+      -- Insert the new row with the updated series format
+      INSERT INTO VOUCHER_NO_SERIAL_TAB (
+         COMPANY,
+         VOUCHER_TYPE,
+         ACCOUNTING_YEAR,
+         PERIOD,
+         SERIE_FROM,
+         SERIE_UNTIL,
+         CURRENT_NUMBER,
+         ROWVERSION,
+         ROWKEY
+      )
+      VALUES (
+         record.COMPANY,
+         record.VOUCHER_TYPE,
+         record.ACCOUNTING_YEAR,
+         record.PERIOD,
+         -- Generate 10-digit format: YYYYMMVVVV
+         TO_NUMBER(record.ACCOUNTING_YEAR || LPAD(record.PERIOD, 2, '0') || '0001'),  -- SERIE_FROM
+         TO_NUMBER(record.ACCOUNTING_YEAR || LPAD(record.PERIOD, 2, '0') || '9999'),  -- SERIE_UNTIL
+         TO_NUMBER(record.ACCOUNTING_YEAR || LPAD(record.PERIOD, 2, '0') || '0001'),  -- SERIE_FROM
+         record.ROWVERSION,
+         record.ROWKEY  -- Use the same ROWKEY
+      );
+
+   END LOOP;
+
+   -- Commit the changes
+   COMMIT;
+END;
+/
+
+
