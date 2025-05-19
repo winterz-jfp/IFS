@@ -1,0 +1,743 @@
+declare
+
+
+already_exists EXCEPTION; -- Declare the named exception
+PRAGMA EXCEPTION_INIT(already_exists, -20112); -- Map to error code ORA-20112: AccountingYear.FND_RECORD_EXIST: The Accounting Year already exists.
+
+already_exists2 EXCEPTION; -- Declare the named exception
+PRAGMA EXCEPTION_INIT(already_exists2, -00001); -- Map to error code ORA-00001: Primary Key: The Accounting Year already exists.
+
+
+v_company varchar2(20) := 'IRL001';
+
+v_site varchar2(30);
+v_period varchar2(20);
+v_exists varchar2(30);
+
+s_address varchar2(20);
+c_address varchar2(20);
+
+flag1 VARCHAR2(50);
+flag2 VARCHAR2(50);
+
+c_m_d number(10) := 1;
+cust_message_class varchar2(20);
+cust_message_default varchar2(20);
+cust_message_seqno varchar2(20);
+
+s_m_d number (10) := 1;
+sup_message_class varchar2(20) := 'INVOIC';
+
+company_name varchar2(500);
+company_assoc varchar2(50);
+
+attr varchar2(500);
+x varchar2(50) := NULL;
+c_db varchar2(50);
+
+x_def_v varchar2(20) := '';
+
+CURSOR icp_companies IS
+        SELECT customer_no 
+        FROM CUST_ORD_CUSTOMER_TAB 
+        WHERE REGEXP_LIKE(customer_no, '^[A-Z]{3}[0-9]{3}$')
+        AND order_id = 'ICP';
+
+
+begin
+    
+    SELECT name, association_no INTO company_name, company_assoc FROM company WHERE company = v_company; -- Gets company name and Assoc num
+    SELECT contract into v_site from company_site where company = v_company; -- Gets Company Site
+    
+    BEGIN
+        SELECT 1 INTO v_exists 
+        FROM voucher_type 
+        WHERE company = v_company 
+        AND voucher_type = 'IS';
+    
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            v_exists := NULL;
+    END;
+    
+    -- Insert IC User Group
+    
+    BEGIN
+        INSERT INTO USER_GROUP_FINANCE_tab (user_group, description,ALLOWED_ACCOUNTING_PERIOD,company,rowversion)
+        VALUES ('IC', 'ICP Mirroring', '1', v_company, '19.03.2025');
+    
+    EXCEPTION 
+        WHEN already_exists2 THEN
+        NULL;
+    END;
+    
+    -- Updates Company Address Tab
+    
+    UPDATE COMPANY_ADDRESS_TAB ca
+    SET EAN_LOCATION = v_company || '-' || ca.address_id
+    WHERE ca.company = v_company
+    AND EXISTS (
+        SELECT 1
+        FROM company_address_type cat
+        WHERE cat.company = ca.company
+          AND cat.address_id = ca.address_id
+          AND cat.ADDRESS_TYPE_CODE_db = 'INVOICE'
+          AND cat.DEF_ADDRESS = 'TRUE'
+    );
+    
+    --Update Company Invoice
+
+    UPDATE COMPANY_INVOICE_INFO_tab cii
+        SET ACC_CURR_DIFF = 0.05,
+        INVOIC_CURR_DIFF = 0.05,
+        DOCUMENT_CLASS = 'CINVOICE'
+        WHERE Company = v_company;
+    
+    -- Update Company Tax Control
+    
+    IF v_company LIKE 'FRA%' THEN
+        UPDATE COMPANY_TAX_CONTROL_TAB
+            SET
+                AR_REQ_TAX_OBJECT_LEVEL = 'FALSE',
+                AR_REQ_TAX_ADDR_LEVEL = 'TRUE',
+                AR_REQ_TAX_TRANS_LEVEL = 'TRUE',
+                AP_REQ_TAX_OBJECT_LEVEL = 'TRUE',
+                AP_REQ_TAX_TRANS_LEVEL = 'TRUE'
+            WHERE company = v_company;
+    ELSE
+        UPDATE COMPANY_TAX_CONTROL_TAB
+            SET
+                AR_REQ_TAX_OBJECT_LEVEL = 'TRUE',
+                AR_REQ_TAX_ADDR_LEVEL = 'FALSE',
+                AR_REQ_TAX_TRANS_LEVEL = 'TRUE',
+                AP_REQ_TAX_OBJECT_LEVEL = 'TRUE',
+                AP_REQ_TAX_TRANS_LEVEL = 'TRUE'
+            WHERE company = v_company;
+    END IF;
+    
+    --Invoice Parameters
+    
+    UPDATE EXT_INC_INV_PARAM_tab
+        SET 
+        CREATE_WHEN_CHECKED = 'TRUE',
+        CREATE_IMAGE = 'TRUE', 
+        USE_CODESTR_COMPL = 'TRUE'
+        WHERE COMPANY = v_company;
+    
+    
+    -- If IS doesn't exist, create it
+    
+    IF v_exists = 0 THEN
+        INSERT INTO VOUCHER_TYPE_TAB (Company, VOUCHER_TYPE, description, AUTOMATIC_ALLOT, SINGLE_FUNCTION_GROUP, lable_print, store_original, automatic_vou_balance, ledger_id, USE_MANUAL, SIMULATION_VOUCHER, BALANCE, ROWVERSION, SEPARATE_USER_APPROVAL, USE_APPROVAL_WORKFLOW)
+        VALUES (v_company, 'IS', 'Interim Sales Voucher', 'Y', 'Y', 'N', 'N', 'N', '*', 'N', 'N', 'Y', TO_DATE('19.03.2025', 'DD.MM.YYYY'), 'N', 'N');
+        
+        INSERT INTO VOUCHER_TYPE_DETAIL_TAB (Company, Voucher_Type, FUNCTION_GROUP, AUTOMATIC_VOU_BALANCE, STORE_ORIGINAL, ROW_GROUP_VALIDATION, REFERENCE_MANDATORY, automatic_allot, single_function_group, rowversion)
+        VALUES (v_company, 'IS', 'LI', 'N', 'N', 'N', 'N', 'Y', 'Y', TO_DATE('19.03.2025', 'DD.MM.YYYY'));
+    END IF;
+       
+   -- Create the Voucher Series
+   
+    FOR rec IN (
+        SELECT Company, voucher_type, accounting_year, period, serie_from, serie_until, rowversion
+        FROM voucher_no_serial_tab
+        WHERE voucher_type = 'BKB' AND Company = v_company) 
+    LOOP
+        INSERT INTO voucher_no_serial_tab (Company, Voucher_Type, accounting_year, Period, serie_from, serie_until, rowversion)
+        
+        VALUES (v_company, 'IS', rec.accounting_year, rec.period, rec.serie_from, rec.serie_until, rec.rowversion);
+    END LOOP;
+    
+    -- Create the Voucher IS User Groups IC AC AR
+    
+    for rec in (
+        select distinct accounting_Year from VOUCHER_TYPE_USER_GROUP_tab where company = 'IRL001' AND voucher_type = 'BKB' ORDER by accounting_year)
+    LOOP
+        BEGIN
+            INSERT INTO VOUCHER_TYPE_USER_GROUP_tab 
+                (company, accounting_year, user_group, voucher_type, default_type, authorize_level, rowversion,function_group)
+            VALUES 
+                (v_company, rec.accounting_year, 'IC', 'IS', 'Y', 'Approve', '19.03.2025', 'LI');
+            EXCEPTION 
+                WHEN already_exists2 THEN
+            NULL;
+        END;
+        
+        BEGIN
+            INSERT INTO VOUCHER_TYPE_USER_GROUP_tab 
+                (company, accounting_year, user_group, voucher_type, default_type, authorize_level, rowversion,function_group)
+            VALUES 
+                (v_company, rec.accounting_year, 'AC', 'IS', 'Y', 'Approve','19.03.2025', 'LI');
+            EXCEPTION 
+                WHEN already_exists2 THEN
+            NULL;
+        END;
+        begin
+            INSERT INTO VOUCHER_TYPE_USER_GROUP_tab 
+                (company, accounting_year, user_group, voucher_type, default_type, authorize_level, rowversion,function_group)
+            VALUES 
+                (v_company, rec.accounting_year, 'AR', 'IS', 'Y', 'Approve', '19.03.2025', 'LI');
+            EXCEPTION 
+                WHEN already_exists2 THEN
+                NULL;
+        END;
+    END LOOP;
+ 
+    -- Replicate the ICP Posting Controls
+ 
+    FOR rec IN (
+        SELECT * 
+        FROM comb_control_type 
+        WHERE COMB_CONTROL_TYPE IN ('SG + COUNT', 'SUP_ASSORT') 
+        AND Control_type1 IN ('C15','C30') 
+        AND Company = 'FRA001'
+    ) 
+    LOOP
+        BEGIN
+            INSERT INTO comb_control_type_tab (Company, Posting_type, comb_control_type, comb_module, control_type1, control_type2, comb_control_type_desc, module1,module2, rowversion)
+            VALUES (
+                v_company,
+                rec.Posting_Type,
+                rec.comb_control_type,
+                rec.comb_module,
+                rec.control_type1,
+                rec.control_type2,
+                rec.comb_control_type_desc,
+                rec.module1,
+                rec.module2,
+                '20.03.2025'
+            );
+        EXCEPTION 
+            WHEN already_exists2 THEN
+            NULL;
+        END;
+    END LOOP;
+ 
+    
+    SELECT DISTINCT cia.address_id INTO c_address
+    FROM CUSTOMER_INFO_ADDRESS cia
+    INNER JOIN CUSTOMER_INFO_ADDRESS_TYPE ciat ON cia.Address_Id = ciat.Address_id AND DEF_ADDRESS = 'TRUE' 
+    AND address_type_code_db = 'INVOICE'
+    WHERE cia.customer_id = v_company;
+    
+    -- Ensure the Customer address = Company address
+ 
+    UPDATE CUSTOMER_INFO_ADDRESS_tab cia
+    SET EAN_LOCATION = v_company || '-' || address_id
+    WHERE cia.customer_id = v_company
+    AND EXISTS (
+        SELECT 1
+        FROM customer_info_address_type cit
+        WHERE cit.customer_id = cia.customer_id
+          AND cit.address_id = cia.address_id
+          AND cit.ADDRESS_TYPE_CODE_db = 'INVOICE'
+          AND cit.DEF_ADDRESS = 'TRUE'
+    );
+ 
+    
+    -- Update Customer Order
+ 
+    INSERT INTO cust_ord_customer_address_tab ( CUSTOMER_no,ADDR_NO,DELIVERY_TERMS,SHIP_VIA_CODE,INTRASTAT_EXEMPT, shipment_uncon_struct, rowversion)
+    VALUES (v_company, c_address, 'EXW', '30', 'Y', 'FALSE', '19.03.2025');
+    
+    -- Customer Message Defaults
+    
+    FOR i IN 1 .. 7 LOOP
+        IF c_m_d = 1 THEN 
+            c_m_d := 2;
+            cust_message_class := 'DESADV';
+            cust_message_default := 'TRUE';
+            cust_message_seqno := 0;
+        ELSIF c_m_d = 2 THEN 
+            c_m_d := 3;
+            cust_message_class := 'DIRDEL';
+            cust_message_default := 'TRUE';
+        ELSIF c_m_d = 3 THEN 
+            c_m_d := 4;
+            cust_message_class := 'INVOIC';
+            cust_message_default := 'FALSE';
+        ELSIF c_m_d = 4 THEN 
+            c_m_d := 5;
+            cust_message_class := 'ORDCHG';
+            cust_message_default := 'TRUE';
+        ELSIF c_m_d = 5 THEN 
+            c_m_d := 6;
+            cust_message_class := 'ORDERS';
+            cust_message_default := 'TRUE';
+        ELSIF c_m_d = 6 THEN 
+            c_m_d := 7;
+            cust_message_class := 'ORDRSP';
+            cust_message_default := 'TRUE';
+        ELSIF c_m_d = 7 THEN 
+            c_m_d := 99;
+            cust_message_class := 'RECADV';
+            cust_message_default := 'TRUE';
+        END IF;
+        
+        -- Only insert if c_m_d is not 99
+        IF c_m_d != 99 THEN
+            INSERT INTO CUSTOMER_INFO_MSG_SETUP_TAB (
+                CUSTOMER_ID,
+                MESSAGE_CLASS,
+                MEDIA_CODE,
+                ADDRESS, 
+                METHOD_DEFAULT,
+                ROWVERSION)
+            VALUES (
+                V_COMPANY,
+                cust_message_class,
+                'MHS',
+                'INTER',
+                cust_message_default,
+                '2'
+            );
+        END IF;
+    END LOOP;
+    
+    -- Create customer Order 
+    BEGIN
+        INSERT INTO CUST_ORD_CUSTOMER_tab (CUSTOMER_NO, CUST_GRP,
+            CURRENCY_CODE,
+            BACKORDER_OPTION,
+            CUST_PART_ACQ_VAL_LEVEL,
+            INVOICE_SORT,
+            ORDER_ID,
+            REPLICATE_DOC_TEXT,
+            HANDL_UNIT_AT_CO_DELIVERY,
+            ORDER_CONF_FLAG,
+            PACK_LIST_FLAG,
+            SUMMARIZED_SOURCE_LINES,
+            SUMMARIZED_FREIGHT_CHARGES,
+            PRINT_DELIVERED_LINES,
+            EMAIL_ORDER_CONF,
+            EMAIL_INVOICE,
+            EDI_AUTO_ORDER_APPROVAL,
+            EDI_AUTO_CHANGE_APPROVAL,
+            EDI_AUTO_APPROVAL_USER,
+            RELEASE_INTERNAL_ORDER,
+            EDI_AUTHORIZE_CODE,
+            RECEIVING_ADVICE_TYPE,
+            REC_ADV_MATCHING_OPTION,
+            AUTO_DESPATCH_ADV_SEND,
+            CR_STOP,
+            CYCLE_PERIOD,
+            CATEGORY,
+            NOTE_ID,
+            TEMPLATE_CUSTOMER,
+            QUICK_REGISTERED_CUSTOMER,
+            COMMISSION_RECEIVER,
+            CUST_PART_OWNER_TRANSFER,
+            SEND_CHANGE_MESSAGE,
+            MUL_TIER_DEL_NOTIFICATION,
+            MATCH_TYPE,
+            PRINT_AMOUNTS_INCL_TAX,
+            CONFIRM_DELIVERIES,
+            CHECK_SALES_GRP_DELIV_CONF,
+            UPDATE_PRICE_FROM_SBI,
+            REC_ADV_AUTO_MATCH_DIFF,
+            REC_ADV_AUTO_MATCHING,
+            SELF_BILLING_MATCH_OPTION,
+            ADV_INV_FULL_PAY,
+            RECEIVE_PACK_SIZE_CHG,
+            ROWVERSION,
+            B2B_AUTO_CREATE_CO_FROM_SQ,
+            PRINT_WITHHOLDING_TAX
+            
+        )
+        values
+        (
+            v_company,
+            '1',
+            'EUR',
+            'INCOMPLETE PACKAGES NOT ALLOWED',
+            'NO_ACQ',
+            'NC',
+            'NO',
+            'N',
+            'USE_SITE_DEFAULT',
+            'Y',
+            'Y',
+            'Y',
+            'Y',
+            'SHIPMENT',
+            'TRUE',
+            'TRUE',
+            'AUTOMATICALLY',
+            'AUTOMATICALLY',
+            'IFSAPP',
+            'MANUALLY',
+            '*',
+            'DO_NOT_USE',
+            'DELIVERY NOTE',
+            'Y',
+            'N',
+            '0',
+            'I',
+            0,
+            'NOT_TEMPLATE',
+            'NORMAL',
+            'DONOTCREATE',
+            'DONT_ALLOW_TRANSFER',
+            'N',
+            'FALSE',
+            'NOAUTO',
+            'FALSE',
+            'FALSE',
+            'FALSE',
+            'FALSE',
+            'FALSE',
+            'FALSE',
+            'DELIVERY NOTE',
+            'FALSE',
+            'FALSE',
+            '19.03.2025',
+            'FALSE',
+            'FALSE'
+        );
+    EXCEPTION 
+        WHEN already_exists2 THEN
+            UPDATE CUST_ORD_CUSTOMER_tab
+                SET CUST_GRP = '1',
+                    CURRENCY_CODE = 'EUR',
+                    BACKORDER_OPTION = 'INCOMPLETE PACKAGES NOT ALLOWED',
+                    CUST_PART_ACQ_VAL_LEVEL = 'NO_ACQ',
+                    INVOICE_SORT = 'NC',
+                    ORDER_ID = 'NO',
+                    REPLICATE_DOC_TEXT = 'N',
+                    HANDL_UNIT_AT_CO_DELIVERY = 'USE_SITE_DEFAULT',
+                    ORDER_CONF_FLAG = 'Y',
+                    PACK_LIST_FLAG = 'Y',
+                    SUMMARIZED_SOURCE_LINES = 'Y',
+                    SUMMARIZED_FREIGHT_CHARGES = 'Y',
+                    PRINT_DELIVERED_LINES = 'SHIPMENT',
+                    EMAIL_ORDER_CONF = 'TRUE',
+                    EMAIL_INVOICE = 'TRUE',
+                    EDI_AUTO_ORDER_APPROVAL = 'AUTOMATICALLY',
+                    EDI_AUTO_CHANGE_APPROVAL = 'AUTOMATICALLY',
+                    EDI_AUTO_APPROVAL_USER = 'IFSAPP',
+                    RELEASE_INTERNAL_ORDER = 'MANUALLY',
+                    EDI_AUTHORIZE_CODE = '*',
+                    RECEIVING_ADVICE_TYPE = 'DO_NOT_USE',
+                    REC_ADV_MATCHING_OPTION = 'DELIVERY NOTE',
+                    AUTO_DESPATCH_ADV_SEND = 'Y',
+                    CR_STOP = 'N',
+                    CYCLE_PERIOD = '0',
+                    CATEGORY = 'I',
+                    NOTE_ID = 0,
+                    TEMPLATE_CUSTOMER = 'NOT_TEMPLATE',
+                    QUICK_REGISTERED_CUSTOMER = 'NORMAL',
+                    COMMISSION_RECEIVER = 'DONOTCREATE',
+                    CUST_PART_OWNER_TRANSFER = 'DONT_ALLOW_TRANSFER',
+                    SEND_CHANGE_MESSAGE = 'N',
+                    MUL_TIER_DEL_NOTIFICATION = 'FALSE',
+                    MATCH_TYPE = 'NOAUTO',
+                    PRINT_AMOUNTS_INCL_TAX = 'FALSE',
+                    CONFIRM_DELIVERIES = 'FALSE',
+                    CHECK_SALES_GRP_DELIV_CONF = 'FALSE',
+                    UPDATE_PRICE_FROM_SBI = 'FALSE',
+                    REC_ADV_AUTO_MATCH_DIFF = 'FALSE',
+                    REC_ADV_AUTO_MATCHING = 'FALSE',
+                    SELF_BILLING_MATCH_OPTION = 'DELIVERY NOTE',
+                    ADV_INV_FULL_PAY = 'FALSE',
+                    RECEIVE_PACK_SIZE_CHG = 'FALSE',
+                    ROWVERSION = '19.03.2025',
+                    B2B_AUTO_CREATE_CO_FROM_SQ = 'FALSE',
+                    PRINT_WITHHOLDING_TAX = 'FALSE'
+                WHERE CUSTOMER_NO = v_company;
+        END;
+    
+    
+    
+    SELECT DISTINCT SIA.address_id INTO s_address
+    FROM SUPPLIER_INFO_ADDRESS sia
+    INNER JOIN SUPPLIER_INFO_ADDRESS_TYPE siat ON sia.Address_Id = siat.Address_id AND DEF_ADDRESS = 'TRUE' AND address_type_code_db = 'INVOICE'
+    WHERE sia.supplier_id = V_COMPANY;
+    
+    IF s_address != c_address THEN
+    
+        FOR rec IN (    
+            select * from SUPPLIER_INFO_ADDRESS_tab where supplier_id = v_company
+        )
+        LOOP
+            
+            INSERT INTO SUPPLIER_INFO_ADDRESS_tab
+            (SUPPLIER_ID,ADDRESS_ID,NAME,ADDRESS,EAN_LOCATION,PARTY,DEFAULT_DOMAIN,COUNTRY,PARTY_TYPE,ADDRESS1,ADDRESS2,ZIP_CODE,CITY,OUTPUT_MEDIA,ROWVERSION)
+            VALUES
+            (v_company, c_address, company_name ,rec.address, v_company || '-' || c_address, rec.PARTY, rec.DEFAULT_DOMAIN, rec.country, rec.party_type, rec.address1, rec.address2, rec.zip_code, rec.city, rec.output_media, '20.03.2025');
+            
+        END LOOP;
+        
+        FOR rec IN (
+            select * from SUPPLIER_INFO_ADDRESS_TYPE_TAB where supplier_id = v_company
+        )
+        LOOP
+            INSERT INTO SUPPLIER_INFO_ADDRESS_TYPE_TAB
+            (SUPPLIER_ID, ADDRESS_ID, ADDRESS_TYPE_CODE, PARTY, DEF_ADDRESS, DEFAULT_DOMAIN, ROWVERSION)
+            VALUES
+            (v_company, c_address, rec.address_type_code, rec.party, rec.def_address, rec.default_domain, 2);
+            
+        END LOOP;
+        
+        INSERT INTO SUPPLIER_ADDRESS_TAB (vendor_no, addr_no, delivery_terms, ship_via_code, INTRASTAT_EXEMPT, rowversion)
+        values (v_company, c_address, 'EXW', 30, 'EXEMPT', '20.03.2025');
+    
+        UPDATE SUPPLIER_INFO_ADDRESS_TYPE_TAB
+            SET DEF_ADDRESS = 'FALSE'
+            WHERE ADDRESS_ID != c_address
+            and v_company = supplier_id;
+        
+        UPDATE SUPPLIER_INFO_ADDRESS_tab
+            SET valid_to = TRUNC(SYSDATE) - 1
+            WHERE address_id != c_address
+            and v_company = supplier_id;
+        
+        UPDATE SUPPLIER_INFO_ADDRESS_tab
+            SET valid_from = TRUNC(SYSDATE)
+            WHERE address_id = c_address
+            and v_company = supplier_id;
+    ELSE
+        
+        UPDATE SUPPLIER_INFO_ADDRESS_tab
+            SET EAN_LOCATION = v_company || '-' || c_address,
+            NAME = COMPANY_NAME
+            WHERE SUPPLIER_ID = v_company 
+            AND address_id = c_address;
+        
+        UPDATE SUPPLIER_ADDRESS_TAB
+            SET INTRASTAT_EXEMPT = 'EXEMPT'
+            WHERE v_company = vendor_no
+            AND addr_no = c_address;
+    
+    
+    END IF;
+
+    -- Supplier Message Defaults
+
+    FOR i IN 1 .. 7 LOOP
+        IF s_m_d = 1 THEN 
+            s_m_d := 2;
+            sup_message_class := 'INVOIC';
+        ELSIF s_m_d = 2 THEN 
+            s_m_d := 3;
+            sup_message_class := 'ORDERS';
+        ELSIF s_m_d = 3 THEN 
+            s_m_d := 4;
+            sup_message_class := 'ORDRSP';
+        ELSIF s_m_d = 4 THEN 
+            s_m_d := 5;
+            sup_message_class := 'DIRDEL';
+        ELSIF s_m_d = 5 THEN 
+            s_m_d := 6;
+            sup_message_class := 'DESADV';
+        ELSIF s_m_d = 6 THEN 
+            s_m_d := 7;
+            sup_message_class := 'RECADV';
+        ELSIF s_m_d = 7 THEN 
+            s_m_d := 99;
+            sup_message_class := 'ORDCHG';
+        END IF;
+        
+        IF s_m_d != 99 THEN
+            INSERT INTO SUPPLIER_INFO_MSG_SETUP_TAB (
+                supplier_id,
+                MESSAGE_CLASS,
+                MEDIA_CODE,
+                ADDRESS, 
+                METHOD_DEFAULT,
+                ROWVERSION)
+            VALUES (
+                V_COMPANY,
+                sup_message_class,
+                'MHS',
+                'INTER',
+                'TRUE',
+                '1'
+            );
+        END IF;
+    END LOOP;
+    
+    
+    UPDATE SUPPLIER_TAB
+        SET SUPP_GRP = v_company,
+        CATEGORY = 'I',
+        ACQUISITION_SITE = v_site,
+        DIR_DEL_APPROVAL = 'AUTOMATICALLY',
+        ORDER_CONF_DIFF_APPROVAL = 'AUTOMATICALLY',
+        ORDER_CONF_APPROVAL = 'AUTOMATICALLY',
+        EDI_AUTO_APPROVAL_USER = 'IFSAPP'
+        WHERE VENDOR_NO = v_company;
+    
+    FOR cmp IN icp_companies LOOP
+        if cmp.customer_no LIKE 'GBR%' then
+            flag1 := 'GBP';
+            flag2 := 1;
+        else
+            flag1 := 'EUR';
+            flag2 := 2;
+        END IF;
+        BEGIN
+            -- Construct attr string dynamically
+            attr := 
+                'IDENTITY' || CHR(31) || v_company || CHR(30) ||
+                'COMPANY' || CHR(31) || cmp.customer_no || CHR(30) ||  
+                'PARTY_TYPE' || CHR(31) || 'Customer' || CHR(30) ||
+                'IDENTITY_TYPE' || CHR(31) || 'Internal' || CHR(30) ||
+                'DEFAULT_CURRENCY_RATE_TYPE' || CHR(31) || flag2 || CHR(30) ||
+                
+                'GROUP_ID' || CHR(31) || 'FRA001' || CHR(30) ||
+                'DEF_CURRENCY' || CHR(31) || flag1  || CHR(30) ||
+                'NO_INVOICE_COPIES' || CHR(31) || TO_CHAR(0) || CHR(30) ||
+                'PAY_TERM_ID' || CHR(31) || TO_CHAR(30) || CHR(30) ||
+                'INVOICE_FEE' || CHR(31) || 'FALSE' || CHR(30);
+
+            -- Call API
+            IDENTITY_INVOICE_INFO_API.New__(x, x, x, attr, 'DO');
+
+        EXCEPTION 
+            WHEN already_exists THEN
+                NULL;  
+        END;
+        
+        
+        
+        
+        BEGIN
+            attr := 
+                'IDENTITY' || CHR(31) || v_company || CHR(30) ||
+                'COMPANY' || CHR(31) || cmp.customer_no || CHR(30) ||  
+                'PARTY_TYPE' || CHR(31) || 'Supplier' || CHR(30) ||
+                'IDENTITY_TYPE' || CHR(31) || 'Internal' || CHR(30) ||
+                'DEFAULT_CURRENCY_RATE_TYPE' || CHR(31) || flag2 || CHR(30) ||
+                'DEF_CURRENCY' || CHR(31) || flag1 || CHR(30) ||
+                'GROUP_ID' || CHR(31) || 'FRA001' || CHR(30) ||
+                'NO_INVOICE_COPIES' || CHR(31) || 0 || CHR(30) ||
+                'PAY_TERM_ID' || CHR(31) || 30 || CHR(30) ||
+                'INVOICE_FEE' || CHR(31) || 'FALSE' || CHR(30) ||
+                'PO_REF_REC_REF_VAL_METHOD'|| CHR(31) || 'PO Reference and Receipt Reference' || CHR(30) ||
+                'TAX_LIABILITY' || CHR(31) || 'TAX' || CHR(30) ||
+                'INVOICING_SUPPLIER' || CHR(31) || v_company || CHR(30);
+
+            -- Call API
+            IDENTITY_INVOICE_INFO_API.New__(x, x, x, attr, 'DO');
+
+        EXCEPTION 
+            WHEN already_exists THEN
+                NULL;
+        END;
+        
+        INSERT INTO invoice_message_defaults_tab
+            (COMPANY, IDENTITY, PARTY_TYPE, MEDIA_CODE, AUTOMATIC_APPROVAL, LOAD_TYPE, USERID, EXCLUDE_POSTINGS, ROWVERSION, RECALCULATE_DUE_DATE, EXCLUDE_INV_LINES)
+            VALUES
+            (cmp.customer_no, v_company, 'SUPPLIER', 'MHS', 'FALSE', 'SUPPEXT', 'IFSAPP', 'FALSE', '20.03.2025', 'FALSE', 'FALSE');
+        
+        INSERT INTO CUSTOMER_INV_MSG_SETUP_tab (CUSTOMER_ID, COMPANY, PARTY_TYPE, MEDIA_CODE, MESSAGE_CLASS, ADDRESS, METHOD_DEFAULT, ROWVERSION)
+            VALUES
+            (v_company, cmp.customer_no, 'CUSTOMER', 'E-INVOICE', 'INVOIC', 'INTER', 'TRUE', '20.03.2025');
+        
+        BEGIN
+            
+            INSERT INTO IDENTITY_PAY_INFO_TAB (IDENTITY, COMPANY, PARTY_TYPE, REMINDER_TEMPLATE, INTEREST_TEMPLATE, PAYMENT_RECEIPT_TYPE, PAYMENT_ADVICE, NETTING_ALLOWED, DEFAULT_PAYMENT_METHOD,IS_ONE_INV_PER_PAY, ROWVERSION)
+                VALUES (v_company, cmp.customer_no, 'CUSTOMER', 1, 1, 'No Receipt', 'No Advice', 'FALSE', 'FALSE', 'FALSE',1 );
+            
+            EXCEPTION 
+            WHEN already_exists2 THEN
+                NULL;
+            
+        END;
+        
+        
+        
+        BEGIN
+        
+            INSERT INTO IDENTITY_PAY_INFO_TAB (IDENTITY, COMPANY, PARTY_TYPE, REMINDER_TEMPLATE, PRIORITY, PAYMENT_ADVICE, OUTPUT_MEDIA,NETTING_ALLOWED, DEFAULT_PAYMENT_METHOD,IS_ONE_INV_PER_PAY, ROWVERSION)
+                VALUES (v_company, cmp.customer_no, 'SUPPLIER', 1, 1, 'No Advice', 'Printout','FALSE', 'TRUE', 'FALSE',1);
+            
+            EXCEPTION 
+            WHEN already_exists2 THEN
+                NULL;
+            
+        END;
+        
+        BEGIN
+            INSERT INTO PAYMENT_WAY_PER_IDENTITY_TAB
+                (COMPANY, IDENTITY, PARTY_TYPE, WAY_ID, DEFAULT_PAYMENT_WAY, ROWVERSION)
+                VALUES
+                (cmp.customer_no, v_company, 'SUPPLIER', 'CASH', 'TRUE', 1);
+        EXCEPTION 
+            WHEN already_exists2 THEN
+                NULL;
+        END;
+        
+        BEGIN
+        
+        INSERT INTO CUSTOMER_TAX_INFO_TAB ( CUSTOMER_ID,ADDRESS_ID,COMPANY,TAX_WITHHOLDING,TAX_ROUNDING_METHOD,TAX_ROUNDING_LEVEL,WITHHOLDING_BASE_AMOUNT,TAX_EXEMPT,ROWVERSION,EXC_FROM_SPESOMETRO_DEC,PERMANENT_ESTABLISHMENT, INV_VOU_DATE_BASE, INV_CURR_RATe_BASE)
+        VALUES (v_company, c_address, cmp.customer_no, 'BLOCKED','ROUND_NEAREST', 'SPEC_ON_COMPANY', 'INVOICENET','FALSE',1,'FALSE','FALSE','SPEC_ON_COMPANY','SPEC_ON_COMPANY');
+        EXCEPTION 
+            WHEN already_exists2 THEN
+                NULL;
+        END;
+        
+        INSERT INTO CUSTOMER_DELIVERY_TAX_INFO_TAB ( customer_id, address_id, company, supply_country, tax_liability, rowversion)
+        VALUES
+        (v_company, c_address, cmp.customer_no, company_api.Get_Country(v_company) , 'TAX', 4);
+        
+        IF cmp.customer_no LIKE 'FRA%' THEN
+            IF v_company LIKE 'FRA%' THEN
+            
+                INSERT INTO CUSTOMER_DELIVERY_FEE_CODE_TAB
+                (CUSTOMER_ID, ADDRESS_ID, COMPANY, SUPPLY_COUNTRY, FEE_CODE, ROWVERSION)
+                VALUES
+                (v_company, c_address, cmp.customer_no, 'FR', 'VSTDE', 4);
+            
+            ELSE
+            
+                INSERT INTO CUSTOMER_DELIVERY_FEE_CODE_TAB
+                (CUSTOMER_ID, ADDRESS_ID, COMPANY, SUPPLY_COUNTRY, FEE_CODE, ROWVERSION)
+                VALUES
+                (v_company, c_address, cmp.customer_no, 'FR', 'VUE', 4);
+                    
+            END IF;
+        END IF;
+        
+        
+        c_db := COMPANY_API.Get_Country_db(cmp.customer_no);
+        BEGIN
+            attr :=
+            'CUSTOMER_ID' || CHR(31) || v_company || CHR(30) ||
+            'ADDRESS_ID' || CHR(31) || c_address || CHR(30) ||
+            'COMPANY' || CHR(31) || cmp.customer_no || CHR(30) ||
+            'SUPPLY_COUNTRY' || CHR(31) || c_db || CHR(30) ||
+            'DELIVERY_COUNTRY' || CHR(31) || '*'|| CHR(30) ||
+            'TAX_ID_TYPE' || CHR(31) || company_api.get_country_db(v_company) || CHR(30) ||
+            'VAT_NO' || CHR(31) || company_assoc || CHR(30);
+            CUSTOMER_DOCUMENT_TAX_INFO_API.New__(x,x,x,attr,'DO');
+        EXCEPTION
+            WHEN already_exists THEN
+                null;
+        end;
+        
+        BEGIN
+        
+            attr :=
+            'SUPPLIER_ID' || CHR(31) || v_company || CHR(30) ||
+            'ADDRESS_ID' || CHR(31) || c_address || CHR(30) ||
+            'COMPANY' || CHR(31) || cmp.customer_no || CHR(30) ||
+            'SUPPLY_COUNTRY' || CHR(31) || c_db || CHR(30) ||
+            'DELIVERY_COUNTRY' || CHR(31) || '*'|| CHR(30) ||
+            'TAX_ID_TYPE' || CHR(31) || company_api.get_country_db(v_company) || CHR(30) ||
+            'VAT_NO' || CHR(31) || company_assoc || CHR(30);
+            
+            SUPPLIER_DOCUMENT_TAX_INFO_API.New__(x,x,x,attr,'DO');
+        
+        
+        
+        EXCEPTION
+            WHEN already_exists THEN
+                null;
+        end;
+        
+        
+    END LOOP;
+    
+    
+END;
+
