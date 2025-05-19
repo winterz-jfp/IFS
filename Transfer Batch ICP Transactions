@@ -1,0 +1,46 @@
+DECLARE
+    CURSOR icp_companies IS
+        SELECT contract, company
+        FROM cust_ord_customer_tab co
+        LEFT JOIN company_site cs ON cs.company = co.customer_no
+        WHERE REGEXP_LIKE(customer_no, '^[A-Z]{3}[0-9]{3}$')
+        AND order_id = 'ICP';
+
+    PROCEDURE Switch_User_Group_And_Run_Batch(
+        from_group VARCHAR2,
+        to_group   VARCHAR2
+    ) IS
+    BEGIN
+        FOR site IN icp_companies LOOP
+            -- Set from_group to N, to_group to Y
+            UPDATE user_group_member_finance_tab
+            SET default_group = 'N'
+            WHERE user_group = from_group AND userid = 'IFSAPP' AND company = site.company;
+
+            UPDATE user_group_member_finance_tab
+            SET default_group = 'Y'
+            WHERE user_group = to_group AND userid = 'IFSAPP' AND company = site.company;
+
+            COMMIT;
+
+            Purchase_Transaction_Hist_API.Prepare_Batch_Transfer__(TRUNC(SYSDATE + 1), 0, site.contract);
+            
+
+            -- Revert: Set to_group to N, from_group to Y
+            UPDATE user_group_member_finance_tab
+            SET default_group = 'N'
+            WHERE user_group = to_group AND userid = 'IFSAPP' AND company = site.company;
+
+            UPDATE user_group_member_finance_tab
+            SET default_group = 'Y'
+            WHERE user_group = from_group AND userid = 'IFSAPP' AND company = site.company;
+
+            COMMIT;
+        END LOOP;
+    END;
+BEGIN
+
+    Switch_User_Group_And_Run_Batch('EX', 'IC');
+    Switch_User_Group_And_Run_Batch('IC', 'EX');
+    
+END;
