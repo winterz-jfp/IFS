@@ -1,0 +1,67 @@
+
+
+
+-- JFP 
+PROCEDURE Notify_approved_milestone_not_invoiced
+IS
+
+emailText_ varchar2(2000);
+emailSubject_ varchar2(2000);
+PO_ VARCHAR2(500);
+OWNER_ VARCHAR2(500);
+STATE_ VARCHAR2(500);
+MILESTONE_ID_ VARCHAR2(500);
+
+
+CURSOR get_milestones IS
+        SELECT 
+            order_no, 
+            date_finished, 
+            milestone_stage_id,
+            TRUNC(SYSDATE) - TRUNC(date_finished) AS days_elapsed,
+            state, 
+            purchase_order_cfp.get_cf$_owned_by(order_no) AS po_owner,
+            Fnd_User_Property_API.Get_Value(
+                purchase_order_cfp.get_cf$_owned_by(order_no),
+                'SMTP_MAIL_ADDRESS'
+            ) AS recipient_email
+        FROM purchase_order_milestone_line 
+        WHERE state = 'Approved'
+            AND TRUNC(SYSDATE) - TRUNC(date_finished) BETWEEN 7 AND 70
+          AND MOD(TRUNC(SYSDATE) - TRUNC(date_finished), 7) = 0
+          --FETCH FIRST 1 ROW ONLY
+          ;
+BEGIN
+    FOR rec_ IN get_milestones LOOP
+        PO_ := rec_.order_no;
+        OWNER_ := rec_.po_owner;
+        STATE_ := rec_.state;
+        MILESTONE_ID_ := rec_.milestone_stage_id;
+        DAYS_ELAPSED_ := rec_.days_elapsed;
+
+        -- Use CHR(10) for new lines (or CHR(13)||CHR(10) for Windows)
+        emailText_ := 
+              'Hello,<br><br>'
+            || 'The Milestone ID' || MILESTONE_ID_ 
+            || ' of the PO ' || PO_ 
+            || ' has been approved '  || DAYS_ELAPSED_ || ' days ago but has not been invoiced.<br><br>' || CHR(10)
+            || 'Please check with the supplier that the said invoice has been communicated to dl_compta@voltalia.com.';
+
+        emailSubject_ := 'Milestone Approved but not invoiced for ' || DAYS_ELAPSED_ || ' days';
+
+        -- Call Command_SYS.Mail correctly
+        Command_SYS.Mail(
+            rec_.recipient_email,                -- To
+            rec_.recipient_email,                -- CC
+            /*'j.pontes@voltalia.com',               -- To for testing purpose
+            'j.pontes@voltalia.com',               -- CC (or use rec_.recipient_email) for testing purpose*/
+            emailText_,                            -- Body
+            NULL, NULL, NULL,                      -- Attachments and other parameters
+            emailSubject_,                         -- Subject
+            NULL, NULL, NULL,                      -- Unused
+            'IFS@VOLTALIA'                         -- From
+        );
+    END LOOP;
+END;
+
+Procedure Notify_approved_milestone_not_invoiced;
