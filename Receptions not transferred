@@ -1,0 +1,33 @@
+PROCEDURE Distribution_Manufacturing_
+IS
+
+    emailText_      VARCHAR2(2000);
+    emailSubject_   VARCHAR2(2000);
+    COUNT_          NUMBER;
+    company_         VARCHAR2(2000);
+
+
+    CURSOR C_GET_COUNT_MPCCOM_ACCOUNTING IS
+        SELECT COUNT(*) COUNT, company
+          FROM MPCCOM_ACCOUNTING
+         WHERE DATE_APPLIED > to_date('01012022','DDMMYYYY')
+           AND DATE_APPLIED < trunc(SYSDATE)
+           AND STATUS_CODE != 3
+        group by company;
+
+
+BEGIN
+
+      FOR REC_ IN C_GET_COUNT_MPCCOM_ACCOUNTING
+      LOOP
+
+        COUNT_ := REC_.COUNT;
+        company_ := REC_.COMPANY;
+
+        emailText_    := 'There are ' || COUNT_ || ' lines, on the table  "Distribution and Manufacturing Postings Analysis", on company ' || company_;
+        emailSubject_ := 'Receptions not transfered';
+
+        Command_SYS.Mail('olasupport-eur@voltalia.com', 'olasupport-eur@voltalia.com',  emailText_, null,  null,  null, emailSubject_,  null, null,  null, 'IFS@VOLTALIA');
+      END LOOP;
+
+END;
