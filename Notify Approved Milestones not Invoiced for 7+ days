@@ -39,17 +39,15 @@ BEGIN
         MILESTONE_ID_ := rec_.milestone_stage_id;
         DAYS_ELAPSED_ := rec_.days_elapsed;
 
-        -- Use CHR(10) for new lines (or CHR(13)||CHR(10) for Windows)
         emailText_ := 
               'Hello,<br><br>'
             || 'The Milestone ID' || MILESTONE_ID_ 
             || ' of the PO ' || PO_ 
             || ' has been approved '  || DAYS_ELAPSED_ || ' days ago but has not been invoiced.<br><br>' || CHR(10)
-            || 'Please check with the supplier that the said invoice has been communicated to dl_compta@voltalia.com.';
+            || 'Please check with the supplier that the said invoice has been communicated to ... .';
 
         emailSubject_ := 'Milestone Approved but not invoiced for ' || DAYS_ELAPSED_ || ' days';
 
-        -- Call Command_SYS.Mail correctly
         Command_SYS.Mail(
             rec_.recipient_email,                -- To
             rec_.recipient_email,                -- CC
