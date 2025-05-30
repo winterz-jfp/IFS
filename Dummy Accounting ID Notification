@@ -1,0 +1,49 @@
+PROCEDURE DMPA_Dummy_Accounting_ID
+IS
+
+    emailSubject_   VARCHAR2(2000);
+    COUNT_          NUMBER;
+    company_         VARCHAR2(2000);
+
+
+    CURSOR C_GET_COUNT_MPCCOM_ACCOUNTING IS
+        SELECT COUNT(*) COUNT, company
+          FROM MPCCOM_ACCOUNTING
+         WHERE DATE_APPLIED > to_date('01012022','DDMMYYYY')
+           AND DATE_APPLIED < trunc(SYSDATE)
+           AND STATUS_CODE != 3
+           AND accounting_id < 0
+        group by company;
+
+    emailText_ VARCHAR2(4000) := 'There are dummy/negative Accounting ID lines on table "Distribution and Manufacturing Postings Analysis", for the following companies: ';
+    first_ BOOLEAN := TRUE;
+    companyList_   VARCHAR2(4000);
+
+BEGIN
+
+      FOR REC_ IN C_GET_COUNT_MPCCOM_ACCOUNTING LOOP
+        IF first_ THEN
+          companyList_ := REC_.COMPANY;
+          first_ := FALSE;
+        ELSE
+          companyList_ := companyList_ || ', ' || REC_.COMPANY;
+        END IF;
+      END LOOP;
+
+  emailText_ := emailText_ || companyList_;
+
+  Command_SYS.Mail(
+    'it-fin-support@voltalia.com',
+    'it-fin-support@voltalia.com',
+    emailText_,
+    null,
+    null,
+    null,
+    emailSubject_,
+    null,
+    null,
+    null,
+    'IFS@VOLTALIA'
+  );
+
+END;
