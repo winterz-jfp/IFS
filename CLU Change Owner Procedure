@@ -1,0 +1,66 @@
+PROCEDURE Change_Owner (
+    v_po VARCHAR2,
+    v_user VARCHAR2
+    )
+    IS
+BEGIN
+
+
+    FOR rec IN (
+        SELECT 
+            po.order_no,
+            pr.objkey,
+            cf$_pr_line_owned_by
+        FROM (
+            SELECT 
+                order_no,
+                MAX(requisition_no) AS max_req_no
+            FROM 
+                purchase_order_line_nopart
+            WHERE 
+                order_no = v_po
+            GROUP BY 
+                order_no
+        ) po
+        LEFT JOIN purchase_req_line_nopart_cfv pr 
+            ON pr.order_no = po.order_no AND pr.requisition_no = po.max_req_no
+        ORDER BY 
+            po.order_no
+    ) LOOP
+    
+    
+    IF rec.objkey IS NOT NULL THEN
+        DECLARE
+            v_exists NUMBER;
+        BEGIN
+            SELECT COUNT(*) INTO v_exists
+            FROM purchase_req_line_nopart_cft
+            WHERE rowkey = rec.objkey;
+
+            IF v_exists > 0 THEN
+                UPDATE purchase_req_line_nopart_cft
+                SET CF$_PR_LINE_OWNED_BY = v_user
+                WHERE rowkey = rec.objkey;
+            ELSE
+                INSERT INTO purchase_req_line_nopart_cft (rowkey, CF$_PR_LINE_OWNED_BY)
+                VALUES (rec.objkey, v_user);
+            END IF;
+        END;
+    END IF;
+    END LOOP;
+    /*
+    UPDATE VLT_SET_PO_OWNER_CLT
+    SET CF$_OWNED_BY = v_user
+    WHERE CF$_ORDER_NO = v_po;
+    
+    */
+    
+    UPDATE VLT_SET_PO_OWNER_CLT
+    SET CF$_NEW_OWNER = '',
+    CF$_OWNED_BY = v_user,
+    CF$_LAST_CHANGE = SYSDATE,
+    CF$_LAST_CHANGE_BY = (
+SELECT username FROM HISTORY_LOG where table_name like '%VLT_SET_PO_OWNER%' and log_id = (select max(log_id) FROM HISTORY_LOG where table_name like '%VLT_SET_PO_OWNER%') )
+    WHERE CF$_ORDER_NO = v_po;
+    
+END Change_Owner;
