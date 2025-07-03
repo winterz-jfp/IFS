@@ -1,0 +1,111 @@
+FUNCTION Preli_Extract_Pdf (
+  objid_    in varchar2,
+  objversion_ in varchar2
+) return varchar2
+is
+  pdf_file utl_file.file_type;
+  Stor_buf_     raw(32000);
+  pdf_blob_len  integer;
+  vstart        number := 1;
+  addmax        binary_integer := 32000;
+  x             number;
+  l_filename_   varchar2(2000);
+  permission    number;
+  NoPermission  EXCEPTION;
+
+BEGIN
+  SELECT COUNT(*) INTO permission
+  FROM all_tab_privs
+  WHERE table_name = ora_dir_ and privilege='WRITE';
+
+  IF permission=0 THEN
+    RAISE NoPermission;
+  END if;
+
+  FOR rc IN
+  (
+    select edm.file_data,
+            'SIA - ' ||
+             ii.COMPANY || ' ' || 
+            replace(ii.PO_REF_NUMBER, '*', '') || '-' ||
+            Supplier_Info_API.Get_Name(ii.IDENTITY) || '-' ||
+            ii.invoice_no || ' '||dir.file_name new_NAME
+    from  incoming_invoice2 ii 
+    inner join doc_reference_object obj on
+    (
+      Client_SYS.Get_Key_Reference_Value(obj.key_ref, 'COMPANY')= ii.COMPANY
+      and Client_SYS.Get_Key_Reference_Value(obj.key_ref, 'INVOICE_ID')=ii.invoice_id
+    )
+    inner join edm_file_storage edm on
+    (
+      obj.doc_no = edm.doc_no
+      and obj.doc_sheet = edm.doc_sheet
+      and obj.doc_rev = edm.doc_rev
+      and obj.doc_class= edm.doc_class
+    )
+    inner join DOC_ISSUE_REFERENCE dir on
+    (
+      dir.doc_no = edm.doc_no
+      and dir.doc_sheet = edm.doc_sheet
+      and dir.doc_rev = edm.doc_rev
+      and dir.doc_class= edm.doc_class
+    )
+    where
+      obj.lu_name in ('ManSuppInvoice')
+      and ii.objid=objid_
+      and ii.objversion = objversion_
+  ) loop
+
+    pdf_blob_len := dbms_lob.getlength(rc.file_data);
+
+    -- Open the destination files.
+    l_filename_ := rc.new_NAME;
+    pdf_file := utl_file.fopen(ora_dir_, l_filename_, 'wb', 32764);
+
+    vstart := 1;
+
+    -- Save blob length
+    x := pdf_blob_len;
+
+    -- If small enough for a single write
+    if pdf_blob_len < 32760 then
+      utl_file.put_raw(pdf_file, rc.file_data);
+      utl_file.fflush(pdf_file);
+    else
+      -- Doesn't fit, have to write it in pieces
+      vstart := 1;
+      while vstart < pdf_blob_len and addmax > 0 loop
+        dbms_lob.read(rc.file_data, addmax, vstart, Stor_buf_);
+
+        utl_file.put_raw(pdf_file, Stor_buf_);
+        utl_file.fflush(pdf_file);
+
+        -- Set the start position for the next cut
+        vstart := vstart + addmax;
+
+        -- Set the end position if less than 32000 bytes
+        x := x - addmax;
+        if x < 32000 then
+          addmax := x;
+        end if;
+      end loop;
+    end if;
+
+    -- Close the files.
+    utl_file.fclose(pdf_file);
+  END loop;
+
+  return 'OK';
+
+exception
+  WHEN NoPermission THEN
+    return 'Extract_Pdf - Directory access ('||ora_dir_||'), denied :'||SQLERRM;
+    raise;
+  when others then
+    -- Close the files if something goes wrong.
+    if utl_file.is_open(pdf_file) then
+      utl_file.fclose(pdf_file);
+      return 'Extract_Pdf - An error was encountered :'||SQLERRM;
+    end if;
+    raise;
+end Preli_Extract_Pdf;
